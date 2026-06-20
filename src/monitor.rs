@@ -15,7 +15,7 @@ use flate2::read::GzDecoder;
 use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
-use crate::capture::{BackendType, create_capture};
+use crate::capture::PacketCapture;
 use crate::player_data::PlayerData;
 use crate::{APP_ID, AppState, DataUpdated, Message, State};
 
@@ -55,9 +55,8 @@ pub struct Monitor {
     player_data: PlayerData,
     sniffer: GameSniffer,
     capture_cancel_token: Option<CancellationToken>,
-    packet_tx: mpsc::UnboundedSender<Vec<u8>>,
-    packet_rx: mpsc::UnboundedReceiver<Vec<u8>>,
-    capture_backend: BackendType,
+    packet_tx: mpsc::UnboundedSender<Result<Vec<u8>>>,
+    packet_rx: mpsc::UnboundedReceiver<Result<Vec<u8>>>,
 }
 
 impl Monitor {
@@ -65,7 +64,6 @@ impl Monitor {
         state_tx: watch::Sender<AppState>,
         mut ui_message_rx: mpsc::UnboundedReceiver<Message>,
         log_packet_rx: watch::Receiver<bool>,
-        capture_backend: BackendType,
     ) -> Result<Self> {
         let mut app_state = AppStateManager::new(state_tx.borrow().clone(), state_tx.clone());
         let game_data = get_database(&mut app_state, &mut ui_message_rx).await?;
@@ -83,7 +81,6 @@ impl Monitor {
             capture_cancel_token: None,
             packet_tx,
             packet_rx,
-            capture_backend,
         })
     }
 
@@ -93,7 +90,16 @@ impl Monitor {
         loop {
             #[rustfmt::skip]
                 tokio::select! {
-                    Some(packet) = self.packet_rx.recv() => self.handle_packet(packet),
+                    Some(packet_res) = self.packet_rx.recv() => {
+                        match packet_res {
+                            Ok(packet) => self.handle_packet(packet),
+                            Err(e) => {
+                                tracing::error!("Capture task encountered an error: {e}");
+                                self.app_state.update_capturing_state(false);
+                                self.capture_cancel_token = None;
+                            }
+                        }
+                    },
                     Some(msg) = self.ui_message_rx.recv() => self.handle_ui_msg(msg),
                 }
         }
@@ -102,17 +108,14 @@ impl Monitor {
     fn handle_ui_msg(&mut self, msg: Message) {
         match msg {
             Message::StartCapture => {
-                if self.capture_cancel_token.is_some() {
-                    tracing::warn!("Capture start request with an existing cancel token");
+                if let Some(cancel_token) = self.capture_cancel_token.take() {
+                    tracing::warn!("Capture start request with an existing cancel token. Cancelling previous capture.");
+                    cancel_token.cancel();
                 }
 
                 // Spawn capture task.
                 let cancel_token = CancellationToken::new();
-                tokio::spawn(capture_task(
-                    cancel_token.clone(),
-                    self.packet_tx.clone(),
-                    self.capture_backend,
-                ));
+                tokio::spawn(capture_task(cancel_token.clone(), self.packet_tx.clone()));
                 self.capture_cancel_token = Some(cancel_token);
                 self.app_state.update_capturing_state(true);
             }
@@ -154,6 +157,11 @@ impl Monitor {
                 self.player_data.process_items(&items);
                 updated.items_updated = Some(Instant::now());
                 has_new_data = true;
+            } else if let Some(properties) = auto_artifactarium::matches_player_property_packet(&command) {
+                tracing::info!("Found properties packet: {:?}", properties);
+                self.player_data.process_properties(&properties);
+                updated.items_updated = Some(Instant::now());
+                has_new_data = true;
             } else if let Some(avatars) = matches_avatar_packet(&command) {
                 tracing::info!("Found avatar packet with {} avatars", avatars.len());
                 self.player_data.process_characters(&avatars);
@@ -191,11 +199,25 @@ async fn get_database(
 
 async fn capture_task(
     cancel_token: CancellationToken,
-    packet_tx: mpsc::UnboundedSender<Vec<u8>>,
-    backend: BackendType,
+    packet_tx: mpsc::UnboundedSender<Result<Vec<u8>>>,
 ) -> Result<()> {
-    let mut capture = create_capture(backend)
-        .map_err(|e| anyhow!("Error creating packet capture using {:?}: {e}", backend))?;
+    let mut capture = match PacketCapture::new() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("Error creating packet capture, retrying... ({})", e);
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            if cancel_token.is_cancelled() {
+                return Ok(());
+            }
+            match PacketCapture::new() {
+                Ok(c) => c,
+                Err(e) => {
+                    let _ = packet_tx.send(Err(anyhow!("Error creating packet capture: {e}")));
+                    return Err(anyhow!("Error creating packet capture: {e}"));
+                }
+            }
+        }
+    };
     tracing::info!("starting capture");
     loop {
         let packet = tokio::select!(
@@ -206,12 +228,14 @@ async fn capture_task(
             Ok(packet) => packet,
             Err(e) => {
                 tracing::error!("Error receiving packet: {e}");
-                continue;
+                let _ = packet_tx.send(Err(anyhow!("Capture stream closed or errored: {e}")));
+                break;
             }
         };
 
-        if let Err(e) = packet_tx.send(packet) {
+        if let Err(e) = packet_tx.send(Ok(packet)) {
             tracing::error!("Error sending captured packet to monitor: {e}");
+            break;
         }
     }
     tracing::info!("ending capture");
