@@ -334,7 +334,7 @@ impl eframe::App for IrminsulApp {
             style.interaction.tooltip_delay = 0.25;
         });
 
-        self.toasts.show(ctx);
+
         if let Some(optimizer_save_dialog) = &mut self.optimizer_save_dialog {
             optimizer_save_dialog.update(ctx);
         }
@@ -460,6 +460,8 @@ impl eframe::App for IrminsulApp {
                 });
             });
         });
+
+        self.toasts.show(ctx);
     }
 }
 
