@@ -22,8 +22,7 @@ use crate::monitor::Monitor;
 use crate::player_data::ExportSettings;
 use crate::update::check_for_app_update;
 use crate::{
-    AppState, ConfirmationType, Message, ReloadHandle, State, TracingLevel, admin, capture,
-    open_log_dir, wish,
+    AppState, ConfirmationType, Message, ReloadHandle, State, TracingLevel, open_log_dir, wish,
 };
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -186,7 +185,6 @@ fn set_launch_on_startup(_enabled: bool) -> Result<()> {
 fn start_async_runtime(
     egui_ctx: Context,
     log_packets_rx: watch::Receiver<bool>,
-    capture_backend: capture::BackendType,
 ) -> (
     mpsc::UnboundedSender<Message>,
     watch::Receiver<AppState>,
@@ -199,7 +197,7 @@ fn start_async_runtime(
     let (wish_url_tx, wish_url_rx) = watch::channel(None);
     let mut updater_state_rx = state_rx.clone();
     let updater_ctx = egui_ctx.clone();
-    thread::spawn(move || {
+    thread::spawn(|| {
         let rt = tokio::runtime::Runtime::new().unwrap();
 
         rt.block_on(async {
@@ -221,6 +219,7 @@ fn start_async_runtime(
                 }
             });
 
+            let monitor_ctx = updater_ctx.clone();
             // Notify egui of state changes.
             tokio::spawn(async move {
                 loop {
@@ -229,14 +228,7 @@ fn start_async_runtime(
                 }
             });
             tracing::info!("Starting monitor");
-            let monitor = match Monitor::new(
-                state_tx,
-                ui_message_rx,
-                log_packets_rx,
-                capture_backend,
-            )
-            .await
-            {
+            let monitor = match Monitor::new(state_tx, ui_message_rx, log_packets_rx, monitor_ctx).await {
                 Ok(monitor) => monitor,
                 Err(e) => {
                     tracing::error!("error loading monitor task: {e}");
@@ -251,11 +243,7 @@ fn start_async_runtime(
 }
 
 impl IrminsulApp {
-    pub fn new(
-        cc: &eframe::CreationContext<'_>,
-        mut tracing_reload_handle: ReloadHandle,
-        capture_backend: capture::BackendType,
-    ) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, mut tracing_reload_handle: ReloadHandle) -> Self {
         egui_extras::install_image_loaders(&cc.egui_ctx);
         egui_material_icons::initialize(&cc.egui_ctx);
 
@@ -268,7 +256,7 @@ impl IrminsulApp {
         tracing_reload_handle.set_filter(saved_state.tracing_level.get_filter());
         let (log_packets_tx, log_packets_rx) = watch::channel(saved_state.log_raw_packets);
         let (ui_message_tx, state_rx, wish_url_rx) =
-            start_async_runtime(cc.egui_ctx.clone(), log_packets_rx, capture_backend);
+            start_async_runtime(cc.egui_ctx.clone(), log_packets_rx);
 
         if let Err(e) = ui_message_tx.send(Message::StartCapture) {
             tracing::error!("Failed to send auto start message: {e}");
@@ -411,7 +399,7 @@ impl eframe::App for IrminsulApp {
                             self.waiting_for_update_confirmation_ui(ui, status)
                         }
                         State::Updating => self.updating_ui(ui),
-                        State::Updated { needs_caps } => self.updated_ui(ui, needs_caps),
+                        State::Updated => self.updated_ui(ui),
                         State::CheckingForData => self.checking_for_data_ui(ui),
                         State::WaitingForDownloadConfirmation(confirmation_type) => {
                             self.waiting_for_download_confirmation_ui(ui, confirmation_type)
@@ -536,57 +524,16 @@ impl IrminsulApp {
         });
     }
 
-    /// Relaunch Irminsul and close this instance.
-    ///
-    /// Uses the executable's own path rather than argv[0], which may be a bare
-    /// name that only resolves through PATH, or be relative to a directory we
-    /// are no longer in.
-    fn restart(&mut self, ui: &mut egui::Ui) {
-        match std::env::current_exe() {
-            Ok(exe_path) => {
-                let _ = std::process::Command::new(exe_path).spawn();
-            }
-            Err(e) => tracing::error!("unable to find Irminsul to restart it: {e}"),
-        }
-        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
-        self.restarting = true;
-    }
-
-    fn updated_ui(&mut self, ui: &mut egui::Ui, needs_caps: bool) {
-        if needs_caps {
-            return self.update_reset_permissions_ui(ui);
-        }
-
+    fn updated_ui(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.label("Updated. Restarting...".to_string());
         });
         if !self.restarting {
-            self.restart(ui);
+            let program_name = std::env::args().next().unwrap();
+            let _ = std::process::Command::new(program_name).spawn();
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+            self.restarting = true;
         }
-    }
-
-    /// Shown when the update dropped the packet capture permissions the user
-    /// had granted.  Restarting without re-granting them just lands in the
-    /// missing permissions dialog, so ask here instead of restarting straight
-    /// away.
-    fn update_reset_permissions_ui(&mut self, ui: &mut egui::Ui) {
-        let exe_path = admin::current_exe_path();
-        let command = admin::setcap_command(&exe_path);
-
-        ui.label("Updated.  The update reset Irminsul's packet capture");
-        ui.label("permissions.  Re-grant them with:");
-        ui.add_space(5.0);
-        ui.label(&command);
-        ui.add_space(5.0);
-
-        ui.horizontal(|ui| {
-            if ui.button("Copy").clicked() {
-                ui.ctx().copy_text(command.clone());
-            }
-            if ui.button("Restart").clicked() && !self.restarting {
-                self.restart(ui);
-            }
-        });
     }
 
     fn checking_for_data_ui(&self, ui: &mut egui::Ui) {
