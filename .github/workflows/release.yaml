@@ -7,6 +7,9 @@ on:
         required: true
         default: "0.0.0"
 
+env:
+  TRACKER_API_URL: ${{ vars.TRACKER_API_URL }}
+
 jobs:
   # Prepare the release commit by bumping the crate version.  This commit
   # is then saved as a git bundle artifact so that subsequent jobs can be
