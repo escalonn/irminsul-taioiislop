@@ -37,11 +37,7 @@ pub enum State {
     CheckingForUpdate,
     WaitingForUpdateConfirmation(String),
     Updating,
-    /// `needs_caps` is set when the update dropped the packet capture
-    /// permissions the user had granted, and they need to be re-granted.
-    Updated {
-        needs_caps: bool,
-    },
+    Updated,
     CheckingForData,
     WaitingForDownloadConfirmation(ConfirmationType),
     Downloading,
@@ -117,10 +113,16 @@ struct Args {
 
     #[arg(
         long = "capture-backend",
+        short = 'b',
         value_enum,
         default_value_t = capture::DEFAULT_CAPTURE_BACKEND_TYPE
     )]
     capture_backend: capture::BackendType,
+
+    #[arg(long, short, default_value_t = false, requires("savefile_path"))]
+    read_from_file: bool,
+
+    savefile_path: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, Default)]
@@ -182,10 +184,16 @@ fn main() -> eframe::Result {
 
     let args = Args::parse();
 
-    if !args.no_admin {
+    if !args.no_admin && !args.read_from_file {
         #[cfg(any(windows, unix))]
         admin::ensure_admin();
     }
+
+    let capture_source = if args.read_from_file {
+        capture::CaptureSource::File(args.savefile_path.unwrap()) // Should be checked by clap
+    } else {
+        capture::CaptureSource::Device(args.savefile_path)
+    };
 
     let capture_backend = args.capture_backend;
 
@@ -212,6 +220,7 @@ fn main() -> eframe::Result {
                 cc,
                 reload_handle,
                 capture_backend,
+                capture_source,
             )))
         }),
     )
@@ -220,7 +229,6 @@ fn main() -> eframe::Result {
 fn log_dir() -> Result<PathBuf> {
     let mut dir = eframe::storage_dir(APP_ID).context("Storage dir not found")?;
     dir.push("log");
-    println!("Log folder: {}", dir.display());
     Ok(dir)
 }
 

@@ -22,9 +22,9 @@ tokio = { version = "1.47.1", features = [
 ] }
 
 anyhow = "1.0.99"
-async-trait = "0.1.92"
+async-trait = "0.1.89"
 async-watcher = "0.3.0"
-auto-artifactarium = { git = "https://github.com/konkers/auto-artifactarium", rev = "4ba25fac64b88970143af6bc2a2ef51338e620d0" }
+auto-artifactarium = { git = "https://github.com/tawan475/auto-artifactarium", rev = "38eb3bc68b94d6b8ba26598144e926ea9dc39a18" }
 base64 = "0.22.1"
 chrono = "0.4.42"
 clap = { version = "4.5.47", features = ["derive"] }
@@ -49,7 +49,6 @@ indexmap = "2.11.1"
 log = "0.4.27"
 notify = "5.2.0"
 open = "5.3.2"
-pcap = { version = "2.3.0", features = ["capture-stream"], optional = true }
 regex = "1.11.2"
 reqwest = { version = "0.12.23", features = ["gzip", "stream", "multipart"] }
 self_update = "0.42.0"
@@ -60,9 +59,10 @@ tokio-util = "0.7.16"
 tracing = { version = "0.1.41" }
 tracing-appender = "0.2.3"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
-tray-icon = "0.24.1"
+tray-icon = { version = "0.24.1", default-features = false, features = [ "gtk" ] }
 image = "0.25.9"
 single-instance = "0.3.3"
+pcap = { version = "2.3.0", features = ["capture-stream"], optional = true }
 
 [target.'cfg(windows)'.dependencies]
 pktmon = { version = "0.6.2", features = ["tokio"] }
@@ -73,11 +73,12 @@ windows = { version = "0.61.3", features = [
 	"Win32_UI_WindowsAndMessaging",
 ] }
 
-[target.'cfg(unix)'.dependencies]
-nix = { version = "0.31.3", features = ["user"] }
-
 [target.'cfg(target_os = "linux")'.dependencies]
 caps = "0.5.6"
+gtk = "0.18.2"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.177"
 
 [build-dependencies]
 # Keep these in sync with dependencies above
@@ -93,7 +94,7 @@ tokio = { version = "1.47.1", features = [
 winresource = "0.1.23"
 
 [features]
-default = []
+default = ["pcap"]
 pcap = ["dep:pcap"]
 static-libpcap = ["pcap"]
 
@@ -109,5 +110,5 @@ opt-level = 2
 # anime-game-data = { path = "../anime-game-data" }
 
 # Uncomment for local debugging
-# [patch."https://github.com/konkers/auto-artifactarium"]
+# [patch."https://github.com/tawan475/auto-artifactarium"]
 # auto-artifactarium = { path = "../auto-artifactarium" }
